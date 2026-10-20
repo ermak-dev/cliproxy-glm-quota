@@ -36,12 +36,10 @@ const (
 	methodQuotaFetch      = "quota.fetch"
 	methodQuotaReset      = "quota.reset"
 
-	methodManagementRegister = "management.register"
-	methodManagementHandle   = "management.handle"
-
-	// methodHostAuthSave is called the other way: this plugin calls INTO the
-	// host (via callHost in main.go), not the reverse.
+	// These two are called the other way: this plugin calls INTO the host
+	// (via callHost in main.go), not the reverse.
 	methodHostAuthSave = "host.auth.save"
+	methodHostLog      = "host.log"
 )
 
 // envelope mirrors sdk/pluginabi.Envelope: every plugin.call response, success
@@ -68,7 +66,24 @@ type pluginMetadata struct {
 	Author           string
 	GitHubRepository string
 	Logo             string
-	ConfigFields     []any
+	ConfigFields     []configField
+}
+
+// configField mirrors sdk/pluginapi.ConfigField (no json tags). Declaring
+// one is what makes the panel's "Configure <plugin>" dialog render an actual
+// input instead of "this plugin declares no visual configuration fields".
+type configField struct {
+	Name        string
+	Type        string
+	Default     any
+	EnumValues  []string
+	Description string
+}
+
+// pluginConfig is this plugin's own section of CLIProxyAPI's config
+// (plugins.configs.glm-quota), handed over as YAML at plugin.register.
+type pluginConfig struct {
+	CPAConfigPath string `yaml:"cpa-config-path"`
 }
 
 // registrationCapabilities mirrors the host's rpcCapabilities wire shape
@@ -101,53 +116,6 @@ type registrationCapabilities struct {
 	CommandLinePlugin             bool   `json:"command_line_plugin"`
 	ManagementAPI                 bool   `json:"management_api"`
 	QuotaProvider                 bool   `json:"quota_provider"`
-}
-
-// resourceRoute mirrors sdk/pluginapi.ResourceRoute (no json tags). Resource
-// requests are explicitly documented as not management-authenticated AND,
-// confirmed empirically against a running v8.0.16 host, GET-only: a POST to
-// a registered resource path 404s before the plugin is ever called. So this
-// plugin only ever registers a GET resource, to render the form; see
-// managementRoute for where the form actually submits to.
-type resourceRoute struct {
-	Path        string
-	Menu        string
-	Description string
-}
-
-// managementRoute mirrors sdk/pluginapi.ManagementRoute (no json tags).
-// Unlike ResourceRoute, the host's management middleware authenticates
-// these with the Bearer management key before this plugin is ever called --
-// which is exactly why the save action lives here and not on the resource
-// page: it is the only registered-route kind that both accepts POST and
-// lets the host (not this plugin, which has no way to check the key itself)
-// verify the caller is allowed to write a credential.
-type managementRoute struct {
-	Method string
-	Path   string
-}
-
-// managementRegistrationResponse is the host's rpcManagementRegistrationResponse
-// wire wrapper (internal/pluginhost/rpc_client.go) -- note this outer struct
-// IS tagged (lowercase), unlike ManagementRoute/ResourceRoute themselves.
-type managementRegistrationResponse struct {
-	Routes    []managementRoute `json:"routes,omitempty"`
-	Resources []resourceRoute   `json:"resources,omitempty"`
-}
-
-// managementRequest mirrors sdk/pluginapi.ManagementRequest (no json tags).
-type managementRequest struct {
-	Method string
-	Path   string
-	Query  map[string][]string
-	Body   []byte
-}
-
-// managementResponse mirrors sdk/pluginapi.ManagementResponse (no json tags).
-type managementResponse struct {
-	StatusCode int
-	Headers    map[string][]string
-	Body       []byte
 }
 
 // hostAuthSaveRequest mirrors sdk/pluginapi.HostAuthSaveRequest -- tagged,

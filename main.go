@@ -89,6 +89,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	"gopkg.in/yaml.v3"
 )
 
 const pluginIdentifier = "glm-quota"
@@ -152,21 +154,7 @@ func cliproxyPluginShutdown() {}
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case methodPluginRegister, methodPluginReconfigure:
-		return okEnvelope(registrationResponse{
-			SchemaVersion: schemaVersion,
-			Metadata: pluginMetadata{
-				Name:             "glm-quota",
-				Version:          "0.1.0",
-				Author:           "ermak.dev",
-				GitHubRepository: "https://github.com/ermak-dev/cliproxy-glm-quota",
-				Logo:             logoDataURI,
-			},
-			Capabilities: registrationCapabilities{
-				AuthProvider:  true,
-				QuotaProvider: true,
-				ManagementAPI: true,
-			},
-		})
+		return handleRegister(request)
 
 	case methodAuthIdentifier, methodQuotaIdentifier:
 		return okEnvelope(identifierResponse{Identifier: pluginIdentifier})
@@ -175,10 +163,10 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return handleAuthParse(request)
 
 	case methodAuthLoginStart, methodAuthLoginPoll, methodAuthRefresh:
-		// This plugin only loads a static API key already placed in
-		// auth-dir; there is no interactive login flow and the key never
-		// expires on a schedule the host needs to drive.
-		return nil, fmt.Errorf("method not supported: %s is a static API-key credential", method)
+		// There is nothing to log into: credentials are derived from keys
+		// already present in the host config, and this plugin never holds a
+		// token with an expiry for the host to drive.
+		return nil, fmt.Errorf("method not supported: %s credentials come from the host config, there is no login flow", method)
 
 	case methodQuotaDescribe:
 		return okEnvelope(quotaDescribeResponse{
@@ -193,15 +181,49 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case methodQuotaReset:
 		return nil, fmt.Errorf("method not supported: quota reset is not offered by z.ai's usage endpoint")
 
-	case methodManagementRegister:
-		return handleManagementRegister()
-
-	case methodManagementHandle:
-		return handleManagementHandle(request)
-
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
+}
+
+// handleRegister answers plugin.register and plugin.reconfigure, and is the
+// only place the operator-supplied config path arrives. Discovery is started
+// (or re-pointed) from here rather than lazily on first use, because nothing
+// else calls into this plugin until a credential already exists -- and
+// creating those credentials is exactly discovery's job.
+func handleRegister(request []byte) ([]byte, error) {
+	var lifecycle lifecycleRequest
+	if err := json.Unmarshal(request, &lifecycle); err != nil {
+		return nil, fmt.Errorf("decode lifecycle request: %w", err)
+	}
+	var cfg pluginConfig
+	if len(lifecycle.ConfigYAML) > 0 {
+		if err := yaml.Unmarshal(lifecycle.ConfigYAML, &cfg); err != nil {
+			return nil, fmt.Errorf("parse plugins.configs.%s: %w", pluginIdentifier, err)
+		}
+	}
+	discoveryState.configure(strings.TrimSpace(cfg.CPAConfigPath))
+
+	return okEnvelope(registrationResponse{
+		SchemaVersion: schemaVersion,
+		Metadata: pluginMetadata{
+			Name:             pluginIdentifier,
+			Version:          "0.2.0",
+			Author:           "ermak.dev",
+			GitHubRepository: "https://github.com/ermak-dev/cliproxy-glm-quota",
+			Logo:             logoDataURI,
+			ConfigFields: []configField{{
+				Name:        "cpa-config-path",
+				Type:        "string",
+				Default:     "",
+				Description: "Absolute path to CLIProxyAPI's own config.yaml. GLM keys are read from its openai-compatibility entries (matched by base-url) and are never copied anywhere else.",
+			}},
+		},
+		Capabilities: registrationCapabilities{
+			AuthProvider:  true,
+			QuotaProvider: true,
+		},
+	})
 }
 
 func handleAuthParse(request []byte) ([]byte, error) {
@@ -210,24 +232,16 @@ func handleAuthParse(request []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode auth.parse request: %w", err)
 	}
 
-	if _, errKey := extractZaiAPIKey(req.RawJSON); errKey != nil {
-		return nil, fmt.Errorf("glm-quota auth file: %w", errKey)
-	}
-
-	label := "GLM Coding Plan"
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(req.RawJSON, &fields); err == nil {
-		if raw, ok := fields["label"]; ok {
-			var custom string
-			if err := json.Unmarshal(raw, &custom); err == nil && strings.TrimSpace(custom) != "" {
-				label = strings.TrimSpace(custom)
-			}
-		}
+	source, label, errSource := parseCredentialFile(req.RawJSON)
+	if errSource != nil {
+		// Not ours: auth-dir holds every provider's credentials, so a file
+		// this plugin does not recognize is the normal case, not an error.
+		return okEnvelope(authParseResponse{Handled: false})
 	}
 
 	fileName := req.FileName
 	if fileName == "" {
-		fileName = pluginIdentifier + ".json"
+		fileName = credentialFileName(source)
 	}
 
 	return okEnvelope(authParseResponse{
@@ -243,12 +257,34 @@ func handleAuthParse(request []byte) ([]byte, error) {
 	})
 }
 
-// credentialIDFromFileName derives this credential's stable ID from its
-// auth-dir file name rather than a constant. AuthData.ID is how the host
-// recognizes "the same credential as before" across reloads; a constant ID
-// here would make every glm-quota file collide onto one credential, so a
-// second key placed under a different file name would silently replace the
-// first instead of adding a second quota card.
+// parseCredentialFile reads one of this plugin's auth-dir files. The file
+// holds a pointer into the host config, never a key.
+func parseCredentialFile(raw []byte) (glmSource, string, error) {
+	if len(raw) == 0 {
+		return glmSource{}, "", fmt.Errorf("empty file")
+	}
+	var file credentialFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return glmSource{}, "", fmt.Errorf("not JSON: %w", err)
+	}
+	if file.Type != pluginIdentifier {
+		return glmSource{}, "", fmt.Errorf("type is %q, not %q", file.Type, pluginIdentifier)
+	}
+	provider := strings.TrimSpace(file.SourceProvider)
+	if provider == "" {
+		return glmSource{}, "", fmt.Errorf("source_provider is empty")
+	}
+	label := strings.TrimSpace(file.Label)
+	if label == "" {
+		label = provider
+	}
+	return glmSource{Provider: provider, KeyIndex: file.SourceKeyIndex}, label, nil
+}
+
+// credentialIDFromFileName derives the credential's stable ID from its file
+// name. AuthData.ID is how the host recognizes "the same credential as
+// before" across reloads, so a constant here would collapse every GLM key
+// onto one credential and one quota card.
 func credentialIDFromFileName(fileName string) string {
 	name := strings.TrimSuffix(filepath.Base(fileName), ".json")
 	name = strings.TrimSpace(name)
@@ -264,9 +300,24 @@ func handleQuotaFetch(request []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode quota.fetch request: %w", err)
 	}
 
-	apiKey, errKey := extractZaiAPIKey(req.StorageJSON)
+	source, _, errSource := parseCredentialFile(req.StorageJSON)
+	if errSource != nil {
+		return nil, fmt.Errorf("credential %s: %w", req.AuthIndex, errSource)
+	}
+
+	configPath := discoveryState.path()
+	if configPath == "" {
+		return nil, fmt.Errorf("cpa-config-path is not set, so the GLM key cannot be resolved")
+	}
+	cfg, errRead := readCPAConfig(configPath)
+	if errRead != nil {
+		return nil, errRead
+	}
+	// Resolved per poll, never cached: a key rotated in the host config
+	// takes effect here immediately, with no second copy to keep in step.
+	apiKey, errKey := resolveGLMKey(cfg, source)
 	if errKey != nil {
-		return nil, fmt.Errorf("credential %s: %w", req.AuthIndex, errKey)
+		return nil, errKey
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
