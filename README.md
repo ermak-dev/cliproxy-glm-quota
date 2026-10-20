@@ -7,7 +7,10 @@ CLIProxyAPI's built-in Management Center (the `/quota` tab).
 
 It is deliberately small: two capabilities, no scheduler, no executor, no UI.
 It does not route any inference traffic and does not touch any existing
-credential.
+credential. Keys are read from the proxy's own config, so nothing has to be
+entered in the panel.
+
+Requires CLIProxyAPI v8.0.16+ (plugin schema 6) and Linux amd64.
 
 - **AuthProvider** — parses the pointer files this plugin maintains in
   auth-dir (see below); holds no key.
@@ -104,9 +107,8 @@ types are inlined on purpose; see the comment at the top of that file.
 ### Deploy
 
 1. Copy `glm-quota.so` to `<plugins.dir>/linux/amd64/glm-quota.so` on the
-   proxy host (for the mop deployment: `~/.config/mop/llm-proxy/plugins/linux/amd64/`).
-2. Restart the proxy (`systemctl restart mop-llm-proxy` for the mop
-   deployment) so it loads the new plugin.
+   proxy host (`plugins.dir` is CLIProxyAPI's `plugins.dir` setting).
+2. Restart the proxy so it loads the new plugin.
 3. Nothing to configure: the plugin finds the proxy's config from its own
    argv. (`cpa-config-path` is only an override; see above.)
 4. Nothing else. Within a few seconds of startup the plugin reads the config,
@@ -136,10 +138,11 @@ types are inlined on purpose; see the comment at the top of that file.
 ## Testing
 
 ```sh
-make test   # go test ./...  -- pure-Go, no cgo build required
-make vet
-make fmt    # gofmt -l .; fix anything it lists
+make check   # gofmt + go vet + go test
+make build   # the cgo build; a broken ABI signature only shows up here
 ```
+
+CI runs the same on every push.
 
 `zai_quota_test.go` covers the z.ai response parsing and the bucket/fraction
 mapping without a live network call, including a captured, anonymized live

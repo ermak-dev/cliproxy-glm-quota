@@ -1,7 +1,6 @@
 PLUGIN := glm-quota
-TARGET := linux/amd64
 
-.PHONY: build test vet fmt clean
+.PHONY: build test vet fmt check clean
 
 build:
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
@@ -14,7 +13,10 @@ vet:
 	go vet ./...
 
 fmt:
-	gofmt -l .
+	@test -z "$$(gofmt -l . | tee /dev/stderr)" || \
+		{ echo "gofmt above; run: gofmt -w ." >&2; exit 1; }
+
+check: fmt vet test
 
 clean:
 	rm -rf dist
