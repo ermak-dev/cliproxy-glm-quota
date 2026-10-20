@@ -72,6 +72,20 @@ func handleAddCredentialSubmit(body []byte) ([]byte, error) {
 		label = "GLM Coding Plan"
 	}
 
+	// The slug becomes the saved file's name, which main.go's
+	// credentialIDFromFileName turns into the credential's stable ID.
+	// Two submissions with the same slug intentionally replace each other
+	// (rotating a key); two different slugs become two separate quota
+	// cards -- this is what "more than one GLM key" means in practice.
+	slug := slugify(form.Get("name"))
+	if slug == "" {
+		slug = slugify(label)
+	}
+	if slug == "" {
+		slug = "default"
+	}
+	fileName := fmt.Sprintf("%s-%s.json", pluginIdentifier, slug)
+
 	fileContent, errMarshal := json.Marshal(map[string]string{
 		"type":    pluginIdentifier,
 		"api_key": apiKey,
@@ -82,7 +96,7 @@ func handleAddCredentialSubmit(body []byte) ([]byte, error) {
 	}
 
 	saveReq, errMarshal := json.Marshal(hostAuthSaveRequest{
-		Name: pluginIdentifier + ".json",
+		Name: fileName,
 		JSON: fileContent,
 	})
 	if errMarshal != nil {
@@ -118,12 +132,18 @@ func renderAddCredentialForm(errMessage string) string {
 read quota from <a href="https://z.ai/manage-apikey/coding-plan/personal/usage"
 target="_blank" rel="noopener">z.ai</a>. This does not change how GLM
 inference requests are routed, and does not touch any existing credential.</p>
+<p>Submitting with a <strong>new</strong> name adds another key, shown as its
+own quota card. Submitting again with the <strong>same</strong> name replaces
+that key (e.g. after rotating it).</p>
 %s
 <form method="POST">
+<label>Name (unique per key, e.g. "personal" or "team-2")<br>
+<input type="text" name="name" placeholder="default" style="width:100%%"></label>
+<br><br>
 <label>API key<br>
 <input type="password" name="api_key" required autocomplete="off" style="width:100%%"></label>
 <br><br>
-<label>Label (optional)<br>
+<label>Label (optional, shown in the credentials list)<br>
 <input type="text" name="label" placeholder="GLM Coding Plan" style="width:100%%"></label>
 <br><br>
 <button type="submit">Save</button>
@@ -142,6 +162,28 @@ func addCredentialSuccessPage() string {
 card doesn't appear right away, reopen the credentials list once.</p>
 </body>
 </html>`
+}
+
+// slugify turns an operator-entered name into a safe auth-dir file-name
+// fragment: lowercase ASCII letters, digits and hyphens only, no leading,
+// trailing or repeated hyphens. An input with no safe characters at all
+// (e.g. empty, or pure punctuation) returns "".
+func slugify(s string) string {
+	var b strings.Builder
+	lastHyphen := true // true keeps a leading hyphen from ever being written
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if !lastHyphen {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
 
 func htmlEscape(s string) string {

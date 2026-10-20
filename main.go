@@ -85,6 +85,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 	"unsafe"
@@ -225,20 +226,35 @@ func handleAuthParse(request []byte) ([]byte, error) {
 
 	fileName := req.FileName
 	if fileName == "" {
-		fileName = "glm-quota.json"
+		fileName = pluginIdentifier + ".json"
 	}
 
 	return okEnvelope(authParseResponse{
 		Handled: true,
 		Auth: authData{
 			Provider:    pluginIdentifier,
-			ID:          pluginIdentifier,
+			ID:          credentialIDFromFileName(fileName),
 			FileName:    fileName,
 			Label:       label,
 			StorageJSON: req.RawJSON,
 			Metadata:    map[string]any{"type": pluginIdentifier},
 		},
 	})
+}
+
+// credentialIDFromFileName derives this credential's stable ID from its
+// auth-dir file name rather than a constant. AuthData.ID is how the host
+// recognizes "the same credential as before" across reloads; a constant ID
+// here would make every glm-quota file collide onto one credential, so a
+// second key placed under a different file name would silently replace the
+// first instead of adding a second quota card.
+func credentialIDFromFileName(fileName string) string {
+	name := strings.TrimSuffix(filepath.Base(fileName), ".json")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return pluginIdentifier
+	}
+	return name
 }
 
 func handleQuotaFetch(request []byte) ([]byte, error) {

@@ -150,6 +150,37 @@ func TestHandleMethodAuthParseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleMethodAuthParseGivesDistinctFilesDistinctIDs(t *testing.T) {
+	// The host recognizes "the same credential across reloads" by
+	// AuthData.ID. A constant ID here would make a second key, placed
+	// under a different file name, silently collide onto the first
+	// instead of appearing as its own quota card -- the bug this test
+	// guards against.
+	parse := func(fileName string) authParseResponse {
+		req := authParseRequest{FileName: fileName, RawJSON: []byte(`{"api_key":"sk-test"}`)}
+		reqJSON, _ := json.Marshal(req)
+		raw, err := handleMethod(methodAuthParse, reqJSON)
+		if err != nil {
+			t.Fatalf("auth.parse(%q) returned error: %v", fileName, err)
+		}
+		var env envelope
+		_ = json.Unmarshal(raw, &env)
+		var parsed authParseResponse
+		_ = json.Unmarshal(env.Result, &parsed)
+		return parsed
+	}
+
+	first := parse("glm-quota-personal.json")
+	second := parse("glm-quota-work.json")
+
+	if first.Auth.ID == second.Auth.ID {
+		t.Fatalf("two differently-named credentials got the same ID %q; a second key would overwrite the first", first.Auth.ID)
+	}
+	if first.Auth.Provider != second.Auth.Provider {
+		t.Fatalf("Provider differs between credentials (%q vs %q); both must share one provider key so one quota_provider registration covers every key", first.Auth.Provider, second.Auth.Provider)
+	}
+}
+
 func TestHandleMethodAuthParseRejectsMissingKey(t *testing.T) {
 	req := authParseRequest{RawJSON: []byte(`{"type":"glm-quota"}`)}
 	reqJSON, _ := json.Marshal(req)

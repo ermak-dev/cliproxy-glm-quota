@@ -23,7 +23,7 @@ any existing credential.
   `host.auth.save` callback. This is the GUI alternative to step 3 below —
   see "Adding the credential from the GUI".
 
-## Why a separate credential
+## Why a separate credential, and why the key can't be read automatically
 
 CLIProxyAPI's quota tab attaches a card to a credential by matching the
 credential's `provider` key against this plugin's declared
@@ -33,6 +33,33 @@ discover or assume. Rather than guess it, this plugin owns its own provider
 key (`glm-quota`) and its own tiny credential, carrying nothing but the same
 API key, used only for the quota probe. The real inference credential is
 untouched.
+
+This was checked, not assumed: `host.auth.list` *can* enumerate every
+existing credential (including config-level `openai-compatibility` /
+`claude-api-key` entries) — so discovering *that* a GLM credential exists,
+and under what provider name, is possible. But `host.auth.get`, the call
+that would actually return a credential's stored key, only works for
+auth-dir *file-backed* credentials (`internal/pluginhost/auth_callbacks.go`'s
+`authPhysicalJSONByIndex` reads the key straight off disk by path); a
+config-level entry has no such file and the call fails with "auth file path
+not found". The mop deployment's Z.ai GLM credential specifically lives in
+`config.yaml`'s `openai-compatibility:` list (`deploy/roles/llmproxy`'s own
+comment: "панель заводит Z.AI как openai-compatibility"), not as an
+auth-dir file — so there is no supported way for this plugin to read that
+key automatically. If it were ever moved to an auth-dir JSON file instead,
+reading it directly would become possible and this plugin's own credential
+would become redundant; until then, the key has to be told to this plugin
+once, separately.
+
+## Multiple keys
+
+Supported — each key is its own auth-dir file (`glm-quota-<name>.json`), and
+each gets its own quota card, exactly like multiple `keys:` entries under one
+`openai-compatibility` block get multiple rows elsewhere in the panel. The
+GUI form (below) asks for a short, unique **name** per key and uses it to
+build that file's name; submitting the same name again replaces that key
+(e.g. after rotating it) rather than adding a duplicate. From the CLI, just
+drop more than one `glm-quota-*.json` file with distinct names.
 
 ## Install
 
@@ -56,13 +83,17 @@ types are inlined on purpose; see the comment at the top of that file.
    proxy host (for the mop deployment: `~/.config/mop/llm-proxy/plugins/linux/amd64/`).
 2. Restart the proxy (`systemctl restart mop-llm-proxy` for the mop
    deployment) so it loads the new plugin.
-3. Add the credential — either from the GUI or by hand:
+3. Add one credential per key — either from the GUI or by hand:
 
    **From the GUI:** open the Management Center, find "GLM Coding Plan"
-   under the Plugins nav, paste the key, submit. Done — skip to step 5.
+   under the Plugins nav, give the key a short unique name, paste the key,
+   submit. Repeat with a different name for each additional key. Skip to
+   step 5.
 
    **By hand:** drop a credential file into the proxy's `oauth.auth-dir`
-   (`~/.config/mop/llm-proxy/auths/` for mop), e.g. `glm-quota.json`:
+   (`~/.config/mop/llm-proxy/auths/` for mop), named `glm-quota-<name>.json`
+   (the `<name>` part just needs to be unique per key — it becomes the
+   credential's ID):
 
    ```json
    {
