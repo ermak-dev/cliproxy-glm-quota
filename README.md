@@ -28,16 +28,26 @@ plugin reads them, never copies them, and re-reads on every quota poll, so
 rotating a key in the config needs no action here and no second copy of the
 secret ever lands on disk.
 
-Point it at the config with the plugin's one setting, `cpa-config-path`
-(rendered as an input in the panel's "Configure glm-quota" dialog):
+**Nothing has to be configured.** The plugin is a shared library inside the
+proxy's own process, so it reads the proxy's argv from `/proc/self/cmdline` and
+takes the path from `-config` / `--config` -- the same source the host uses for
+its own plugin bootstrap. If the proxy was started without that flag, it falls
+back to `$WRITABLE_PATH/config.yaml`, then to `./config.yaml`, mirroring the
+host's order.
+
+`cpa-config-path` exists only as an override (initially empty), and is the one
+field the panel's "Configure glm-quota" dialog shows:
 
 ```yaml
 plugins:
   configs:
     glm-quota:
       enabled: true
-      cpa-config-path: /home/ermak/.config/mop/llm-proxy/config.yaml
+      # cpa-config-path: /some/other/config.yaml   # only to override detection
 ```
+
+Clearing it goes back to auto-detection rather than pinning whatever was
+detected once.
 
 ### Why a credential file per key, and why it holds no key
 
@@ -97,14 +107,8 @@ types are inlined on purpose; see the comment at the top of that file.
    proxy host (for the mop deployment: `~/.config/mop/llm-proxy/plugins/linux/amd64/`).
 2. Restart the proxy (`systemctl restart mop-llm-proxy` for the mop
    deployment) so it loads the new plugin.
-3. Point the plugin at CLIProxyAPI's own config, in `plugins.configs.glm-quota`
-   of that same `config.yaml`:
-
-   ```yaml
-   cpa-config-path: /home/ermak/.config/mop/llm-proxy/config.yaml
-   ```
-
-   (The panel's "Configure glm-quota" dialog renders this as an input.)
+3. Nothing to configure: the plugin finds the proxy's config from its own
+   argv. (`cpa-config-path` is only an override; see above.)
 4. Nothing else. Within a few seconds of startup the plugin reads the config,
    finds every GLM key, and registers one credential per key; a
    reconfiguration through the panel picks up a changed path immediately.

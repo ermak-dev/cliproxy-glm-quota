@@ -208,7 +208,7 @@ func handleRegister(request []byte) ([]byte, error) {
 		SchemaVersion: schemaVersion,
 		Metadata: pluginMetadata{
 			Name:             pluginIdentifier,
-			Version:          "0.2.0",
+			Version:          "0.3.0",
 			Author:           "ermak.dev",
 			GitHubRepository: "https://github.com/ermak-dev/cliproxy-glm-quota",
 			Logo:             logoDataURI,
@@ -216,7 +216,7 @@ func handleRegister(request []byte) ([]byte, error) {
 				Name:        "cpa-config-path",
 				Type:        "string",
 				Default:     "",
-				Description: "Absolute path to CLIProxyAPI's own config.yaml. GLM keys are read from its openai-compatibility entries (matched by base-url) and are never copied anywhere else.",
+				Description: "Optional. Path to CLIProxyAPI's own config.yaml. Leave empty to detect it from the proxy's -config flag, WRITABLE_PATH, or the working directory. GLM keys are read from its openai-compatibility entries (matched by base-url) and are never copied anywhere else.",
 			}},
 		},
 		Capabilities: registrationCapabilities{
@@ -307,7 +307,7 @@ func handleQuotaFetch(request []byte) ([]byte, error) {
 
 	configPath := discoveryState.path()
 	if configPath == "" {
-		return nil, fmt.Errorf("cpa-config-path is not set, so the GLM key cannot be resolved")
+		return nil, fmt.Errorf("could not determine the host config path; set cpa-config-path explicitly")
 	}
 	cfg, errRead := readCPAConfig(configPath)
 	if errRead != nil {

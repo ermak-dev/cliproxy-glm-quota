@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,8 +34,11 @@ const (
 // this plugin's auth-dir credentials.
 type discovery struct {
 	mu sync.Mutex
-	// configPath is the operator-supplied cpa-config-path.
-	configPath string
+	// configuredPath is the operator-supplied cpa-config-path, empty when
+	// they did not set one. Kept separate from the resolved path so that
+	// clearing the setting goes back to auto-detection rather than pinning
+	// whatever was detected once.
+	configuredPath string
 	// written remembers the exact JSON last saved per file name, so a tick
 	// that finds nothing changed issues no host.auth.save at all -- rewriting
 	// identical files every couple of minutes would churn the auth-dir and
@@ -45,15 +49,18 @@ type discovery struct {
 
 var discoveryState = &discovery{written: map[string]string{}}
 
-// configure records the config path and starts the background loop once.
+// configure records the operator-supplied path and starts the background loop
+// once. An empty path is normal and means "detect it": the proxy's own argv is
+// visible from inside the process, so nothing has to be typed in the panel.
 func (d *discovery) configure(configPath string) {
+	configPath = strings.TrimSpace(configPath)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.configPath != configPath {
+	if d.configuredPath != configPath {
 		// A changed path invalidates what we believe is on disk.
 		d.written = map[string]string{}
 	}
-	d.configPath = configPath
+	d.configuredPath = configPath
 	if d.started {
 		return
 	}
@@ -61,10 +68,16 @@ func (d *discovery) configure(configPath string) {
 	go d.loop()
 }
 
+// path is the effective config path: the operator's setting when there is
+// one, the detected host path otherwise.
 func (d *discovery) path() string {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.configPath
+	configured := d.configuredPath
+	d.mu.Unlock()
+	if configured != "" {
+		return configured
+	}
+	return hostConfigPath()
 }
 
 func (d *discovery) loop() {
@@ -85,7 +98,7 @@ func (d *discovery) loop() {
 func (d *discovery) syncOnce() error {
 	configPath := d.path()
 	if configPath == "" {
-		return fmt.Errorf("cpa-config-path is not set, so no GLM keys can be discovered")
+		return fmt.Errorf("could not determine the host config path; set cpa-config-path explicitly")
 	}
 	cfg, errRead := readCPAConfig(configPath)
 	if errRead != nil {
