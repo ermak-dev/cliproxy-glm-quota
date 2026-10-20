@@ -109,28 +109,42 @@ types are inlined on purpose; see the comment at the top of that file.
    restart (per `internal/watcher` in the host); if the card doesn't appear,
    restart the proxy once. The GUI path takes effect immediately.
 5. Open the Management Center's Quota tab. A `glm-quota` card should appear
-   with 5-hour and weekly (or whatever windows z.ai currently reports)
-   remaining-fraction bars.
+   with 5-hour and weekly remaining-fraction bars (confirmed against a live
+   account; see the note on `windowLabel` in `zai_quota.go` for how those two
+   are actually told apart — z.ai's own `type` field doesn't do it).
 
 ## Adding the credential from the GUI
 
-The "GLM Coding Plan" page is a `ResourceRoute` (`/v0/resource/plugins/glm-quota/add`),
-which CLIProxyAPI documents as **not** management-authenticated — the host
-serves it without checking the management Bearer key, same as any other
-plugin resource page (e.g. the quota-monitor dashboards in this ecosystem).
-In the mop deployment this is fine in practice: the only route to that page
-at all is through `mop-web`'s own admin-role gate in front of the otherwise
-loopback-only management port, so reaching the form already implies the
-viewer is an authenticated admin. The one thing this plugin does better than
-the reference example it's based on (`examples/plugin/host-callback-auth-files`
-in the main CLIProxyAPI repo, which also writes a credential from an
-unauthenticated resource page): the API key is submitted as a POST body,
-never as a URL query string, so it never ends up in an access log or browser
-history.
+The "GLM Coding Plan" page itself is a `ResourceRoute`
+(`/v0/resource/plugins/glm-quota/add`) — unauthenticated, confirmed against a
+running v8.0.16 host, and GET-only (a bare POST 404s before the plugin is
+even called; this is not documented, just how the host routes it). That's
+fine for *displaying* the form: no secret is needed just to look at it.
 
-If you deploy this plugin somewhere the management port is reachable by
-untrusted parties without an equivalent edge gate, don't rely on this page —
-use the file-drop path instead, over a channel you already trust (SSH).
+The actual save is a separate, authenticated `ManagementRoute`
+(`POST /v0/management/plugins/glm-quota/add`), reached by the page's own
+inline script, not a plain `<form method=POST>` (a browser form post can't
+attach a custom header; `fetch()` can). The form therefore asks for two
+things: the **management key** (the same one used to log into this panel —
+pasted in, never auto-filled, since a resource page is not allowed to carry
+it) and the GLM API key. Submitting sends the GLM key as a `fetch()` POST
+body with `Authorization: Bearer <management key>` — never as a URL query
+string, so neither key ends up in an access log or browser history. This
+improves on the one official plugin example that does something similar
+(`examples/plugin/host-callback-auth-files` in the main CLIProxyAPI repo),
+which saves via an unauthenticated resource GET with the secret inline in
+the query string.
+
+One subtlety specific to `ManagementRoute`, worth knowing if you ever add
+another one: unlike `ResourceRoute` (which the host auto-namespaces under
+`/v0/resource/plugins/<id>/`), a `ManagementRoute`'s path gets **no**
+automatic per-plugin prefix — `internal/pluginhost/management.go`'s
+`normalizeManagementRoute` just prepends the bare `/v0/management`. This
+plugin supplies its own `/plugins/glm-quota/add` prefix explicitly (the
+convention the host itself expects, per the same file's
+`legacyPluginRoutePrefix`); a bare `/add` would 404 (confirmed — that was
+this plugin's first, broken attempt) or, worse, silently collide with
+another plugin's route of the same name.
 
 ## What it does not do
 
@@ -156,5 +170,24 @@ make fmt    # gofmt -l .; fix anything it lists
 ```
 
 `zai_quota_test.go` covers the z.ai response parsing and the bucket/fraction
-mapping without a live network call. `main_test.go` exercises the RPC
-dispatch (`handleMethod`) directly, without the cgo boundary.
+mapping without a live network call, including a captured, anonymized live
+response (`TestToQuotaFetchResponse/live_production_shape`). `main_test.go`
+exercises the RPC dispatch (`handleMethod`) directly, without the cgo
+boundary.
+
+An earlier version of this plugin used the wrong field as the credit-total
+denominator (`number`, which is actually the window's period — "5 hours",
+"1 week" — not its allowance) and labeled windows from `type`, which z.ai
+sends as the literal string `"CREDIT_LIMIT"` on every entry regardless of
+period. Both bugs happened to look correct on the two specific values
+observed during development (fully-fresh and fully-spent), which is why
+they survived a non-live test suite; they were only caught by checking a
+real deployed response. `usage` is the real allowance; `unit`+`number`
+is the only signal that actually distinguishes windows. See the comments on
+`zaiQuotaWireLimit` and `windowLabel` in `zai_quota.go`.
+
+## Logo
+
+`assets/logo.png` is embedded via `go:embed` (see `logo.go`) and sent as a
+`data:` URI in `Metadata.Logo` — there's no public host for this repo yet to
+link to instead.

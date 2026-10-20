@@ -159,6 +159,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				Version:          "0.1.0",
 				Author:           "ermak.dev",
 				GitHubRepository: "https://github.com/ermak-dev/cliproxy-glm-quota",
+				Logo:             logoDataURI,
 			},
 			Capabilities: registrationCapabilities{
 				AuthProvider:  true,

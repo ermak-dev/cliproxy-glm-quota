@@ -1,3 +1,4 @@
 /dist/
 *.so
 *.h
+/cliproxy-glm-quota

@@ -104,21 +104,35 @@ type registrationCapabilities struct {
 }
 
 // resourceRoute mirrors sdk/pluginapi.ResourceRoute (no json tags). Resource
-// requests are explicitly documented as not management-authenticated -- see
-// the comment on handleAddCredentialForm in management.go for why that is an
-// acceptable tradeoff in this deployment and how the form avoids putting the
-// API key anywhere logs would see it.
+// requests are explicitly documented as not management-authenticated AND,
+// confirmed empirically against a running v8.0.16 host, GET-only: a POST to
+// a registered resource path 404s before the plugin is ever called. So this
+// plugin only ever registers a GET resource, to render the form; see
+// managementRoute for where the form actually submits to.
 type resourceRoute struct {
 	Path        string
 	Menu        string
 	Description string
 }
 
+// managementRoute mirrors sdk/pluginapi.ManagementRoute (no json tags).
+// Unlike ResourceRoute, the host's management middleware authenticates
+// these with the Bearer management key before this plugin is ever called --
+// which is exactly why the save action lives here and not on the resource
+// page: it is the only registered-route kind that both accepts POST and
+// lets the host (not this plugin, which has no way to check the key itself)
+// verify the caller is allowed to write a credential.
+type managementRoute struct {
+	Method string
+	Path   string
+}
+
 // managementRegistrationResponse is the host's rpcManagementRegistrationResponse
 // wire wrapper (internal/pluginhost/rpc_client.go) -- note this outer struct
 // IS tagged (lowercase), unlike ManagementRoute/ResourceRoute themselves.
 type managementRegistrationResponse struct {
-	Resources []resourceRoute `json:"resources,omitempty"`
+	Routes    []managementRoute `json:"routes,omitempty"`
+	Resources []resourceRoute   `json:"resources,omitempty"`
 }
 
 // managementRequest mirrors sdk/pluginapi.ManagementRequest (no json tags).

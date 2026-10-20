@@ -45,6 +45,9 @@ func TestHandleMethodManagementRegister(t *testing.T) {
 	if len(reg.Resources) != 1 || reg.Resources[0].Path != addCredentialPath {
 		t.Fatalf("Resources = %+v; want exactly one resource at %q", reg.Resources, addCredentialPath)
 	}
+	if len(reg.Routes) != 1 || reg.Routes[0].Method != "POST" || reg.Routes[0].Path != addCredentialManagementPath {
+		t.Fatalf("Routes = %+v; want exactly one authenticated POST route at %q -- the save action, which a GET-only resource route can't carry", reg.Routes, addCredentialManagementPath)
+	}
 }
 
 func TestHandleManagementHandleRendersForm(t *testing.T) {
@@ -66,8 +69,11 @@ func TestHandleManagementHandleRendersForm(t *testing.T) {
 	if !strings.Contains(string(resp.Body), `name="api_key"`) {
 		t.Fatalf("Body does not contain an api_key field: %s", resp.Body)
 	}
-	if strings.Contains(string(resp.Body), "<script") {
-		t.Fatalf("Body contains a script tag, unexpected for a static form page")
+	if !strings.Contains(string(resp.Body), `name="mgmt_key"`) {
+		t.Fatalf("Body does not contain a management-key field: %s", resp.Body)
+	}
+	if !strings.Contains(string(resp.Body), "fetch(") {
+		t.Fatalf("Body has no fetch() call -- a plain <form method=POST> can't attach the Authorization header the save route requires")
 	}
 }
 
