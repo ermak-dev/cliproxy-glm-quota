@@ -35,6 +35,13 @@ const (
 	methodQuotaDescribe   = "quota.describe"
 	methodQuotaFetch      = "quota.fetch"
 	methodQuotaReset      = "quota.reset"
+
+	methodManagementRegister = "management.register"
+	methodManagementHandle   = "management.handle"
+
+	// methodHostAuthSave is called the other way: this plugin calls INTO the
+	// host (via callHost in main.go), not the reverse.
+	methodHostAuthSave = "host.auth.save"
 )
 
 // envelope mirrors sdk/pluginabi.Envelope: every plugin.call response, success
@@ -94,6 +101,46 @@ type registrationCapabilities struct {
 	CommandLinePlugin             bool   `json:"command_line_plugin"`
 	ManagementAPI                 bool   `json:"management_api"`
 	QuotaProvider                 bool   `json:"quota_provider"`
+}
+
+// resourceRoute mirrors sdk/pluginapi.ResourceRoute (no json tags). Resource
+// requests are explicitly documented as not management-authenticated -- see
+// the comment on handleAddCredentialForm in management.go for why that is an
+// acceptable tradeoff in this deployment and how the form avoids putting the
+// API key anywhere logs would see it.
+type resourceRoute struct {
+	Path        string
+	Menu        string
+	Description string
+}
+
+// managementRegistrationResponse is the host's rpcManagementRegistrationResponse
+// wire wrapper (internal/pluginhost/rpc_client.go) -- note this outer struct
+// IS tagged (lowercase), unlike ManagementRoute/ResourceRoute themselves.
+type managementRegistrationResponse struct {
+	Resources []resourceRoute `json:"resources,omitempty"`
+}
+
+// managementRequest mirrors sdk/pluginapi.ManagementRequest (no json tags).
+type managementRequest struct {
+	Method string
+	Path   string
+	Query  map[string][]string
+	Body   []byte
+}
+
+// managementResponse mirrors sdk/pluginapi.ManagementResponse (no json tags).
+type managementResponse struct {
+	StatusCode int
+	Headers    map[string][]string
+	Body       []byte
+}
+
+// hostAuthSaveRequest mirrors sdk/pluginapi.HostAuthSaveRequest -- tagged,
+// lowercase, unlike the untagged types above.
+type hostAuthSaveRequest struct {
+	Name string          `json:"name"`
+	JSON json.RawMessage `json:"json"`
 }
 
 type registrationResponse struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -22,11 +23,90 @@ func TestHandleMethodRegister(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &reg); err != nil {
 		t.Fatalf("decode registration: %v", err)
 	}
-	if !reg.Capabilities.QuotaProvider || !reg.Capabilities.AuthProvider {
-		t.Fatalf("Capabilities = %+v; want quota_provider and auth_provider both true", reg.Capabilities)
+	if !reg.Capabilities.QuotaProvider || !reg.Capabilities.AuthProvider || !reg.Capabilities.ManagementAPI {
+		t.Fatalf("Capabilities = %+v; want quota_provider, auth_provider and management_api all true", reg.Capabilities)
 	}
-	if reg.Capabilities.Scheduler || reg.Capabilities.Executor || reg.Capabilities.ManagementAPI {
-		t.Fatalf("Capabilities = %+v; want every other capability false", reg.Capabilities)
+	if reg.Capabilities.Scheduler || reg.Capabilities.Executor {
+		t.Fatalf("Capabilities = %+v; want every non-declared capability false", reg.Capabilities)
+	}
+}
+
+func TestHandleMethodManagementRegister(t *testing.T) {
+	raw, err := handleMethod(methodManagementRegister, nil)
+	if err != nil {
+		t.Fatalf("management.register returned error: %v", err)
+	}
+	var env envelope
+	_ = json.Unmarshal(raw, &env)
+	var reg managementRegistrationResponse
+	if err := json.Unmarshal(env.Result, &reg); err != nil {
+		t.Fatalf("decode management.register response: %v", err)
+	}
+	if len(reg.Resources) != 1 || reg.Resources[0].Path != addCredentialPath {
+		t.Fatalf("Resources = %+v; want exactly one resource at %q", reg.Resources, addCredentialPath)
+	}
+}
+
+func TestHandleManagementHandleRendersForm(t *testing.T) {
+	req := managementRequest{Method: "GET", Path: addCredentialPath}
+	reqJSON, _ := json.Marshal(req)
+	raw, err := handleMethod(methodManagementHandle, reqJSON)
+	if err != nil {
+		t.Fatalf("management.handle returned error: %v", err)
+	}
+	var env envelope
+	_ = json.Unmarshal(raw, &env)
+	var resp managementResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("decode management.handle response: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("StatusCode = %d; want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(resp.Body), `name="api_key"`) {
+		t.Fatalf("Body does not contain an api_key field: %s", resp.Body)
+	}
+	if strings.Contains(string(resp.Body), "<script") {
+		t.Fatalf("Body contains a script tag, unexpected for a static form page")
+	}
+}
+
+func TestHandleAddCredentialSubmitRejectsEmptyKey(t *testing.T) {
+	req := managementRequest{Method: "POST", Path: addCredentialPath, Body: []byte("api_key=&label=x")}
+	reqJSON, _ := json.Marshal(req)
+	raw, err := handleMethod(methodManagementHandle, reqJSON)
+	if err != nil {
+		t.Fatalf("management.handle returned error: %v", err)
+	}
+	var env envelope
+	_ = json.Unmarshal(raw, &env)
+	var resp managementResponse
+	_ = json.Unmarshal(env.Result, &resp)
+	if resp.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d; want 400 for an empty api_key", resp.StatusCode)
+	}
+	if !strings.Contains(string(resp.Body), "required") {
+		t.Fatalf("Body = %s; want an explanation that the key is required", resp.Body)
+	}
+}
+
+func TestHandleAddCredentialSubmitCallsHostAuthSave(t *testing.T) {
+	// callHost talks to the real host over cgo and is not mockable from a
+	// plain Go test; this only confirms the plugin fails cleanly (rather
+	// than panicking or reporting success) when no host is attached, which
+	// is exactly what happens when main_test.go runs outside the proxy.
+	req := managementRequest{Method: "POST", Path: addCredentialPath, Body: []byte("api_key=sk-test")}
+	reqJSON, _ := json.Marshal(req)
+	raw, err := handleMethod(methodManagementHandle, reqJSON)
+	if err != nil {
+		t.Fatalf("management.handle returned error: %v", err)
+	}
+	var env envelope
+	_ = json.Unmarshal(raw, &env)
+	var resp managementResponse
+	_ = json.Unmarshal(env.Result, &resp)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("StatusCode = %d; want 502 when host.auth.save has no real host to answer it", resp.StatusCode)
 	}
 }
 

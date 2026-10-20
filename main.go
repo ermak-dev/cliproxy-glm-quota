@@ -10,8 +10,10 @@
 // touches how GLM inference traffic is routed, and it never has to agree
 // with whatever provider name the GLM inference credential already uses.
 //
-// Install: drop a file named glm-quota.json (or anything ending .json) into
-// the proxy's auth-dir with the shape:
+// Install: either open the "GLM Coding Plan" page under the Management
+// Center's Plugins nav (served by this plugin's own ManagementAPI resource,
+// see management.go) and paste the API key there, or drop a file named
+// glm-quota.json straight into the proxy's auth-dir:
 //
 //	{"type": "glm-quota", "api_key": "<your coding-plan key>", "label": "GLM Coding Plan"}
 //
@@ -52,6 +54,29 @@ typedef struct {
 extern int cliproxyPluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
 extern void cliproxyPluginFree(void*, size_t);
 extern void cliproxyPluginShutdown(void);
+
+// This plugin calls back into the host exactly once -- host.auth.save, from
+// the add-credential form -- so the call/free_buffer function pointers given
+// to cliproxy_plugin_init are stashed in a single static, matching the
+// official examples/plugin/host-callback-auth-files pattern.
+static const cliproxy_host_api* stored_host;
+
+static void store_host_api(const cliproxy_host_api* host) {
+	stored_host = host;
+}
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	if (stored_host == NULL || stored_host->call == NULL) {
+		return 1;
+	}
+	return stored_host->call(stored_host->host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	if (stored_host != NULL && stored_host->free_buffer != NULL && ptr != NULL) {
+		stored_host->free_buffer(ptr, len);
+	}
+}
 */
 import "C"
 
@@ -79,7 +104,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	if plugin == nil {
 		return 1
 	}
-	_ = host // this plugin never calls back into the host.
+	C.store_host_api(host)
 	plugin.abi_version = C.uint32_t(abiVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -137,6 +162,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			Capabilities: registrationCapabilities{
 				AuthProvider:  true,
 				QuotaProvider: true,
+				ManagementAPI: true,
 			},
 		})
 
@@ -164,6 +190,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 
 	case methodQuotaReset:
 		return nil, fmt.Errorf("method not supported: quota reset is not offered by z.ai's usage endpoint")
+
+	case methodManagementRegister:
+		return handleManagementRegister()
+
+	case methodManagementHandle:
+		return handleManagementHandle(request)
 
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
@@ -242,6 +274,43 @@ func okEnvelope(result any) ([]byte, error) {
 func errorEnvelope(code, message string) []byte {
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
 	return raw
+}
+
+// callHost makes a synchronous call into the host, the mirror image of
+// cliproxyPluginCall. Used exactly once, by the add-credential form, to
+// invoke host.auth.save.
+func callHost(method string, payload []byte) (json.RawMessage, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+
+	var reqPtr *C.uint8_t
+	if len(payload) > 0 {
+		reqPtr = (*C.uint8_t)(C.CBytes(payload))
+		defer C.free(unsafe.Pointer(reqPtr))
+	}
+
+	var resp C.cliproxy_buffer
+	if rc := C.call_host_api(cMethod, reqPtr, C.size_t(len(payload)), &resp); rc != 0 {
+		return nil, fmt.Errorf("host call %s failed (no host callback registered)", method)
+	}
+	if resp.ptr == nil || resp.len == 0 {
+		return nil, fmt.Errorf("host call %s returned an empty response", method)
+	}
+	raw := C.GoBytes(resp.ptr, C.int(resp.len))
+	C.free_host_buffer(resp.ptr, resp.len)
+
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("decode host response for %s: %w", method, err)
+	}
+	if !env.OK {
+		msg := "host rejected the call"
+		if env.Error != nil && env.Error.Message != "" {
+			msg = env.Error.Message
+		}
+		return nil, fmt.Errorf("%s: %s", method, msg)
+	}
+	return env.Result, nil
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {
